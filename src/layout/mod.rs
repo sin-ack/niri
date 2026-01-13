@@ -58,6 +58,7 @@ use self::workspace::{OutputId, Workspace};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::scrolling::ScrollDirection;
+use crate::niri::PeekEdge;
 use crate::niri_render_elements;
 use crate::render_helpers::offscreen::OffscreenData;
 use crate::render_helpers::renderer::NiriRenderer;
@@ -4572,6 +4573,26 @@ impl<W: LayoutElement> Layout<W> {
 
         self.toggle_overview();
         true
+    }
+
+    pub fn peek_edge(&mut self, edge: Option<PeekEdge>) {
+        let MonitorSet::Normal {
+            monitors,
+            active_monitor_idx,
+            ..
+        } = &mut self.monitor_set
+        else {
+            return;
+        };
+
+        for (idx, mon) in monitors.iter_mut().enumerate() {
+            if idx == *active_monitor_idx {
+                mon.peek_edge(edge);
+            } else {
+                // We can only peek an edge on the active monitor, so stop peeking on others.
+                mon.peek_edge(None);
+            }
+        }
     }
 
     pub fn toggle_overview_to_workspace(&mut self, ws_idx: usize) {

@@ -19,6 +19,7 @@ use super::{ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, Opti
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::SizingMode;
+use crate::niri::PeekEdge;
 use crate::niri_render_elements;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::RenderTarget;
@@ -50,6 +51,17 @@ pub struct ScrollingSpace<W: LayoutElement> {
     /// with this view offset (rather than added as a constant elsewhere in the code). This allows
     /// for natural handling of fullscreen windows, which must ignore work area padding.
     view_offset: ViewOffset,
+
+    /// The intended edge the user could peek if there is an obscured column
+    /// on that edge.
+    ///
+    /// When the focused column or the view offset changes, we check whether
+    /// the conditions for peeking are met, and [`Self::edge_peek`] updated
+    /// accordingly.
+    intended_peek_edge: Option<PeekEdge>,
+
+    /// The edge peek animation currently happening, if any.
+    edge_peek: Option<EdgePeekState>,
 
     /// Whether to activate the previous, rather than the next, column upon column removal.
     ///
@@ -281,6 +293,44 @@ struct MoveAnimation {
     from: f64,
 }
 
+#[derive(Debug)]
+pub(super) struct EdgePeekState {
+    /// The edge being actively peeked.
+    ///
+    /// If [`Some`], then the edge is currently being peeked towards;
+    /// if [`None`], an edge was peeked but is no longer, and we're just waiting for
+    /// the animation to finish.
+    edge: Option<PeekEdge>,
+    /// The animation that's being performed.
+    ///
+    /// The target value will be positive if the right edge is being peeked, and
+    /// negative if the left edge is being peeked.
+    ///
+    /// If [`Self::edge`] is [`Some`], we latch to [`EdgePeekProgress::Done`]
+    /// once the animation is complete; if it's [`None`],
+    /// [`ScrollingSpace::edge_peek`] will be cleared once the animation is complete.
+    progress: EdgePeekProgress,
+}
+
+#[derive(Debug)]
+enum EdgePeekProgress {
+    Animation(Animation),
+    Done,
+}
+
+impl EdgePeekState {
+    pub fn value(&self) -> f64 {
+        match &self.progress {
+            EdgePeekProgress::Animation(anim) => anim.value(),
+            EdgePeekProgress::Done => match self.edge {
+                Some(PeekEdge::Right) => 1.,
+                Some(PeekEdge::Left) => -1.,
+                None => 0.,
+            },
+        }
+    }
+}
+
 impl<W: LayoutElement> ScrollingSpace<W> {
     pub fn new(
         view_size: Size<f64, Logical>,
@@ -297,6 +347,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             active_column_idx: 0,
             interactive_resize: None,
             view_offset: ViewOffset::Static(0.),
+            intended_peek_edge: None,
+            edge_peek: None,
             activate_prev_column_on_removal: None,
             view_offset_to_restore: None,
             closing_windows: Vec::new(),
@@ -329,6 +381,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.scale = scale;
         self.options = options;
 
+        // working_area potentially changed; re-evaluate edge peek
+        self.evaluate_edge_peek();
+
         // Apply always-center and such right away.
         if !self.columns.is_empty() && !self.view_offset.is_gesture() {
             self.animate_view_offset_to_column(None, self.active_column_idx, None);
@@ -341,10 +396,87 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
     }
 
+    pub fn update_edge_peek(&mut self, peek_edge: Option<PeekEdge>) {
+        self.intended_peek_edge = peek_edge;
+        self.evaluate_edge_peek();
+    }
+
+    fn is_edge_peek_possible(&self) -> bool {
+        match self.intended_peek_edge {
+            Some(PeekEdge::Left) => {
+                // The negative left gap turns into a positive left gap when we flip
+                // the sign, so we need to undo that to get the left edge position.
+                let view_offset_minus_left_gap =
+                    -self.view_offset.target() - self.options.layout.gaps;
+
+                self.active_column_idx > 0 && view_offset_minus_left_gap == 0.
+            }
+            Some(PeekEdge::Right) => {
+                // 1. The view offset contains a negative left gap.
+                // 2. By flipping it we turn that into a positive left gap.
+                // 3. We add an extra right gap which should cover the full padding.
+                let view_offset_plus_right_gap =
+                    -self.view_offset.target() + self.options.layout.gaps;
+
+                self.columns.len() >= 1
+                    && (self.active_column_idx < self.columns.len() - 1)
+                    && (view_offset_plus_right_gap + self.data[self.active_column_idx].width
+                        == self.working_area.size.w)
+            }
+            None => false,
+        }
+    }
+
+    fn should_update_edge_peek_animation(&self, target_edge: Option<PeekEdge>) -> bool {
+        match self.edge_peek.as_ref() {
+            Some(p) => match (p.edge, target_edge) {
+                (Some(current), Some(intended)) => current != intended,
+                (Some(_), None) | (None, Some(_)) => true,
+                (None, None) => false,
+            },
+            None => target_edge.is_some(),
+        }
+    }
+
+    // FIXME: We don't call this enough times. The following pieces of data used in
+    //        is_edge_peek_possible() can change without us calling this method:
+    //        - self.data[self.active_column_idx].width (when a column resizes)
+    fn evaluate_edge_peek(&mut self) {
+        // If edge peeking conditions are not met, animate to not peeking.
+        let edge = if self.is_edge_peek_possible() {
+            self.intended_peek_edge
+        } else {
+            None
+        };
+
+        if !self.should_update_edge_peek_animation(edge) {
+            return;
+        }
+
+        let from = self.edge_peek.take().map_or(0., |p| p.value());
+        let to = match edge {
+            Some(PeekEdge::Left) => -1.,
+            Some(PeekEdge::Right) => 1.,
+            None => 0.,
+        };
+
+        self.edge_peek = Some(EdgePeekState {
+            edge,
+            progress: EdgePeekProgress::Animation(Animation::new(
+                self.clock.clone(),
+                from,
+                to,
+                0.,
+                self.options.animations.edge_peek.0,
+            )),
+        });
+    }
+
     pub fn advance_animations(&mut self) {
         if let ViewOffset::Animation(anim) = &self.view_offset {
             if anim.is_done() {
                 self.view_offset = ViewOffset::Static(anim.to());
+                self.evaluate_edge_peek();
             }
         }
 
@@ -373,6 +505,22 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         }
 
+        match &mut self.edge_peek {
+            Some(peek_state) => match &mut peek_state.progress {
+                EdgePeekProgress::Animation(anim) => {
+                    if anim.is_done() {
+                        if peek_state.edge.is_some() {
+                            peek_state.progress = EdgePeekProgress::Done;
+                        } else {
+                            self.edge_peek = None;
+                        }
+                    }
+                }
+                EdgePeekProgress::Done => (),
+            },
+            None => (),
+        }
+
         for col in &mut self.columns {
             col.advance_animations();
         }
@@ -385,6 +533,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn are_animations_ongoing(&self) -> bool {
         self.view_offset.is_animation_ongoing()
+            || self.edge_peek.as_ref().map_or(false, |p| {
+                matches!(p.progress, EdgePeekProgress::Animation(_))
+            })
             || self.columns.iter().any(Column::are_animations_ongoing)
             || !self.closing_windows.is_empty()
     }
@@ -726,6 +877,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     0.,
                     config,
                 ));
+                self.evaluate_edge_peek();
             }
         }
     }
@@ -789,6 +941,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         if self.active_column_idx != idx {
             self.active_column_idx = idx;
+            self.evaluate_edge_peek();
 
             // A different column was activated; reset the flag.
             self.activate_prev_column_on_removal = None;
@@ -1010,6 +1163,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 self.view_offset = ViewOffset::Static(0.);
                 self.view_offset =
                     ViewOffset::Static(self.compute_new_view_offset_for_column(None, idx, None));
+                self.evaluate_edge_peek();
             }
 
             let prev_offset = (!was_empty && idx == self.active_column_idx + 1)
@@ -2897,6 +3051,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .is_fullscreen()
     }
 
+    fn peek_amount(&self) -> f64 {
+        self.working_area.size.w
+            * (self.options.gestures.peek_edges.amount.0 / 100.0)
+            * self.edge_peek.as_ref().map_or(0., |p| p.value())
+    }
+
     pub fn render<R: NiriRenderer>(
         &self,
         renderer: &mut R,
@@ -2920,7 +3080,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let mut first = true;
 
         // This matches self.tiles_in_render_order().
-        let view_off = Point::from((-self.view_pos(), 0.));
+        let view_off = Point::from((-self.view_pos() - self.peek_amount(), 0.));
         for (col, col_x) in self.columns_in_render_order() {
             let col_off = Point::from((col_x, 0.));
             let col_render_off = col.render_offset();
@@ -3027,6 +3187,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             dnd_nonzero_start_time: None,
         };
         self.view_offset = ViewOffset::Gesture(gesture);
+        self.evaluate_edge_peek();
     }
 
     pub fn dnd_scroll_gesture_begin(&mut self) {
@@ -3050,6 +3211,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             dnd_nonzero_start_time: None,
         };
         self.view_offset = ViewOffset::Gesture(gesture);
+        self.evaluate_edge_peek();
 
         self.interactive_resize = None;
     }
@@ -3185,6 +3347,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         if self.columns.is_empty() {
             self.view_offset = ViewOffset::Static(current_view_offset);
+            self.evaluate_edge_peek();
             return true;
         }
 
@@ -3467,6 +3630,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         self.active_column_idx = new_col_idx;
+        self.evaluate_edge_peek();
 
         let target_view_offset = target_snap.view_pos - new_col_x;
 
@@ -3477,6 +3641,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             velocity,
             self.options.animations.horizontal_view_movement.0,
         ));
+        self.evaluate_edge_peek();
 
         // HACK: deal with things like snapping to the right edge of a larger-than-view window.
         self.animate_view_offset_to_column(None, new_col_idx, None);
@@ -3501,6 +3666,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             } else {
                 self.view_offset = ViewOffset::Static(gesture.delta_from_tracker);
             }
+            self.evaluate_edge_peek();
 
             if !self.columns.is_empty() {
                 // Just in case, make sure the active window remains on screen.

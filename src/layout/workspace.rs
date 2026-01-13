@@ -28,6 +28,7 @@ use super::{
     RemovedTile, SizeFrac,
 };
 use crate::animation::Clock;
+use crate::niri::PeekEdge;
 use crate::niri_render_elements;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
@@ -372,6 +373,10 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn are_transitions_ongoing(&self) -> bool {
         self.scrolling.are_transitions_ongoing() || self.floating.are_transitions_ongoing()
+    }
+
+    pub(super) fn update_edge_peek(&mut self, peek_edge: Option<PeekEdge>) {
+        self.scrolling.update_edge_peek(peek_edge);
     }
 
     pub fn update_render_elements(&mut self, is_active: bool) {

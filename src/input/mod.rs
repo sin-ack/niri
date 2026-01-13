@@ -2613,6 +2613,8 @@ impl State {
             self.niri.pointer_inside_hot_corner = true;
         }
 
+        self.niri.layout.peek_edge(under.peek_edge);
+
         // Activate a new confinement if necessary.
         self.niri.maybe_activate_pointer_constraint();
 
@@ -2705,6 +2707,8 @@ impl State {
             }
             self.niri.pointer_inside_hot_corner = true;
         }
+
+        self.niri.layout.peek_edge(under.peek_edge);
 
         self.niri.maybe_activate_pointer_constraint();
 
