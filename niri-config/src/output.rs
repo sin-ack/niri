@@ -7,7 +7,7 @@ use knuffel::traits::ErrorSpan;
 use knuffel::Decode;
 use niri_ipc::{ConfiguredMode, HSyncPolarity, Transform, VSyncPolarity};
 
-use crate::gestures::HotCorners;
+use crate::gestures::{HotCorners, PeekEdges};
 use crate::{Color, FloatOrInt, LayoutPart};
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -75,6 +75,8 @@ pub struct Output {
     #[knuffel(child)]
     pub hot_corners: Option<HotCorners>,
     #[knuffel(child)]
+    pub peek_edges: Option<PeekEdges>,
+    #[knuffel(child)]
     pub layout: Option<LayoutPart>,
 }
 
@@ -107,6 +109,7 @@ impl Default for Output {
             background_color: None,
             backdrop_color: None,
             hot_corners: None,
+            peek_edges: None,
             layout: None,
         }
     }
