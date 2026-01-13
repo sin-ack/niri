@@ -20,6 +20,7 @@ use super::workspace::{
 use super::{compute_overview_zoom, ActivateWindow, HitType, LayoutElement, Options};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
+use crate::niri::PeekEdge;
 use crate::niri_render_elements;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::shadow::ShadowRenderElement;
@@ -69,6 +70,8 @@ pub struct Monitor<W: LayoutElement> {
     pub(super) previous_workspace_id: Option<WorkspaceId>,
     /// In-progress switch between workspaces.
     pub(super) workspace_switch: Option<WorkspaceSwitch>,
+    /// The edge currently being peeked, if any.
+    edge_peek: Option<PeekEdge>,
     /// Indication where an interactively-moved window is about to be placed.
     pub(super) insert_hint: Option<InsertHint>,
     /// Insert hint element for rendering.
@@ -340,6 +343,7 @@ impl<W: LayoutElement> Monitor<W> {
             overview_open: false,
             overview_progress: None,
             workspace_switch: None,
+            edge_peek: None,
             clock,
             base_options,
             options,
@@ -1074,6 +1078,12 @@ impl<W: LayoutElement> Monitor<W> {
         }
     }
 
+    fn update_ws_edge_peek(&mut self) {
+        for ws in &mut self.workspaces {
+            ws.update_edge_peek(self.edge_peek);
+        }
+    }
+
     pub(super) fn are_animations_ongoing(&self) -> bool {
         self.workspace_switch
             .as_ref()
@@ -1394,6 +1404,15 @@ impl<W: LayoutElement> Monitor<W> {
     #[cfg(test)]
     pub(super) fn overview_progress_value(&self) -> Option<f64> {
         self.overview_progress.as_ref().map(|p| p.value())
+    }
+
+    pub(super) fn peek_edge(&mut self, edge: Option<PeekEdge>) {
+        if self.edge_peek == edge {
+            return;
+        }
+
+        self.edge_peek = edge;
+        self.update_ws_edge_peek();
     }
 
     pub fn workspace_render_idx(&self) -> f64 {

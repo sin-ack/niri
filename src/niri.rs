@@ -528,6 +528,13 @@ pub enum KeyboardFocus {
     Mru,
 }
 
+// The edge the mouse is peeking at. The mouse must be at the exact edge for this to be set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeekEdge {
+    Left,
+    Right,
+}
+
 #[derive(Default, Clone, PartialEq)]
 pub struct PointContents {
     // Output under point.
@@ -543,6 +550,8 @@ pub struct PointContents {
     pub layer: Option<LayerSurface>,
     // Pointer is over a hot corner.
     pub hot_corner: bool,
+    // Pointer is over an edge and peeking.
+    pub peek_edge: Option<PeekEdge>,
 }
 
 #[derive(Debug, Default)]
@@ -3298,6 +3307,37 @@ impl Niri {
         false
     }
 
+    fn is_inside_peek_edge(&self, output: &Output, pos: Point<f64, Logical>) -> Option<PeekEdge> {
+        let config = self.config.borrow();
+        let peek_edges = output
+            .user_data()
+            .get::<OutputName>()
+            .and_then(|name| config.outputs.find(name))
+            .and_then(|c| c.peek_edges)
+            .unwrap_or(config.gestures.peek_edges);
+
+        if peek_edges.off {
+            return None;
+        }
+
+        let geom = self.global_space.output_geometry(output).unwrap();
+        let size = geom.size.to_f64();
+
+        let contains = move |edge: f64, height: f64| {
+            Rectangle::new(Point::new(edge, 0.), Size::new(1., height)).contains(pos)
+        };
+
+        if contains(0., size.h) {
+            return Some(PeekEdge::Left);
+        }
+
+        if contains(size.w - 1., size.h) {
+            return Some(PeekEdge::Right);
+        }
+
+        return None;
+    }
+
     pub fn is_sticky_obscured_under(
         &self,
         output: &Output,
@@ -3621,6 +3661,10 @@ impl Niri {
             if self.is_inside_hot_corner(output, pos_within_output) {
                 rv.hot_corner = true;
                 return rv;
+            }
+
+            if !is_overview_open {
+                rv.peek_edge = self.is_inside_peek_edge(output, pos_within_output);
             }
 
             under = under
