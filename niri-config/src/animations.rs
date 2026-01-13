@@ -18,6 +18,7 @@ pub struct Animations {
     pub exit_confirmation_open_close: ExitConfirmationOpenCloseAnim,
     pub screenshot_ui_open: ScreenshotUiOpenAnim,
     pub overview_open_close: OverviewOpenCloseAnim,
+    pub edge_peek: EdgePeekAnim,
     pub recent_windows_close: RecentWindowsCloseAnim,
 }
 
@@ -36,6 +37,7 @@ impl Default for Animations {
             exit_confirmation_open_close: Default::default(),
             screenshot_ui_open: Default::default(),
             overview_open_close: Default::default(),
+            edge_peek: Default::default(),
             recent_windows_close: Default::default(),
         }
     }
@@ -305,6 +307,24 @@ impl Default for OverviewOpenCloseAnim {
                 damping_ratio: 1.,
                 stiffness: 800,
                 epsilon: 0.0001,
+            }),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgePeekAnim(pub Animation);
+
+impl Default for EdgePeekAnim {
+    fn default() -> Self {
+        Self(Animation {
+            off: false,
+            // FIXME(before merge): These are copied from OverviewOpenCloseAnim, but could be made
+            //                      nicer.
+            kind: Kind::Spring(SpringParams {
+                damping_ratio: 1.,
+                stiffness: 800,
+                epsilon: 0.001,
             }),
         })
     }
